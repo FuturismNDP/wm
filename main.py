@@ -1,11 +1,9 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Circle
-import io
+import math
 
 class PivotVisualizerApp:
     def __init__(self, root):
@@ -14,8 +12,8 @@ class PivotVisualizerApp:
         self.root.geometry("1000x700")
         
         # Khởi tạo dữ liệu
-        self.df = None
-        self.pivot_df = None
+        self.raw_data = {}
+        self.pivot_data = {}
         
         self.setup_ui()
         
@@ -129,7 +127,7 @@ class PivotVisualizerApp:
                 data = text_widget.get("1.0", tk.END).strip()
                 if not data:
                     messagebox.showerror("Lỗi", f"Vui lòng nhập dữ liệu cho cột {column_names[i]}")
-                    return None
+                    return False
                 
                 # Tách dữ liệu theo dòng
                 lines = [line.strip() for line in data.split('\n') if line.strip()]
@@ -139,50 +137,82 @@ class PivotVisualizerApp:
             lengths = [len(col) for col in columns_data]
             if len(set(lengths)) > 1:
                 messagebox.showerror("Lỗi", "Các cột phải có cùng số lượng dòng dữ liệu")
-                return None
+                return False
             
-            # Tạo DataFrame
-            data_dict = {}
+            # Lưu dữ liệu
+            self.raw_data = {}
             for i, col_name in enumerate(column_names):
                 if col_name == "CA_1":
                     # Chuyển đổi CA_1 thành số
                     try:
-                        data_dict[col_name] = [float(x) for x in columns_data[i]]
+                        self.raw_data[col_name] = [float(x) for x in columns_data[i]]
                     except ValueError:
                         messagebox.showerror("Lỗi", "Cột CA_1 phải chứa các giá trị số")
-                        return None
+                        return False
                 else:
-                    data_dict[col_name] = columns_data[i]
-            
-            self.df = pd.DataFrame(data_dict)
+                    self.raw_data[col_name] = columns_data[i]
             
             # Cập nhật filter combo
-            unique_positions = sorted(self.df['md_position'].unique())
+            unique_positions = sorted(list(set(self.raw_data['md_position'])))
             self.filter_combo['values'] = ['Tất cả'] + unique_positions
             self.filter_combo.set('Tất cả')
             
-            return self.df
+            return True
             
         except Exception as e:
             messagebox.showerror("Lỗi", f"Có lỗi khi xử lý dữ liệu: {str(e)}")
-            return None
+            return False
+    
+    def get_filtered_data(self):
+        if not self.raw_data:
+            return {}
+        
+        filter_value = self.filter_var.get()
+        if filter_value == 'Tất cả' or filter_value == '':
+            return self.raw_data
+        
+        # Lọc dữ liệu
+        filtered_data = {key: [] for key in self.raw_data.keys()}
+        for i, pos in enumerate(self.raw_data['md_position']):
+            if pos == filter_value:
+                for key in self.raw_data.keys():
+                    filtered_data[key].append(self.raw_data[key][i])
+        
+        return filtered_data
+    
+    def create_pivot_table(self, data):
+        # Tạo pivot table thủ công
+        pivot = {}
+        
+        # Lấy unique values
+        x_values = sorted(list(set(data['x_Rows'])))
+        y_values = sorted(list(set(data['y_Columns'])))
+        
+        # Khởi tạo pivot table
+        for x in x_values:
+            pivot[x] = {}
+            for y in y_values:
+                pivot[x][y] = 0
+        
+        # Tính tổng
+        for i in range(len(data['x_Rows'])):
+            x = data['x_Rows'][i]
+            y = data['y_Columns'][i]
+            value = data['CA_1'][i]
+            pivot[x][y] += value
+        
+        return pivot, x_values, y_values
     
     def create_pivot(self):
-        if self.parse_input_data() is None:
+        if not self.parse_input_data():
             return
         
         try:
             # Lọc dữ liệu theo filter
-            filtered_df = self.get_filtered_data()
+            filtered_data = self.get_filtered_data()
             
             # Tạo pivot table
-            self.pivot_df = filtered_df.pivot_table(
-                index='x_Rows',
-                columns='y_Columns', 
-                values='CA_1',
-                aggfunc='sum',
-                fill_value=0
-            )
+            self.pivot_data, self.x_values, self.y_values = self.create_pivot_table(filtered_data)
             
             # Hiển thị trong treeview
             self.display_pivot_table()
@@ -192,26 +222,16 @@ class PivotVisualizerApp:
         except Exception as e:
             messagebox.showerror("Lỗi", f"Có lỗi khi tạo pivot table: {str(e)}")
     
-    def get_filtered_data(self):
-        if self.df is None:
-            return None
-        
-        filter_value = self.filter_var.get()
-        if filter_value == 'Tất cả' or filter_value == '':
-            return self.df
-        else:
-            return self.df[self.df['md_position'] == filter_value]
-    
     def display_pivot_table(self):
         # Xóa dữ liệu cũ
         for item in self.tree.get_children():
             self.tree.delete(item)
         
-        if self.pivot_df is None:
+        if not self.pivot_data:
             return
         
         # Thiết lập columns
-        columns = ['Index'] + list(self.pivot_df.columns)
+        columns = ['x_Rows'] + self.y_values
         self.tree['columns'] = columns
         self.tree['show'] = 'headings'
         
@@ -221,16 +241,16 @@ class PivotVisualizerApp:
             self.tree.column(col, width=80)
         
         # Thêm dữ liệu
-        for index, row in self.pivot_df.iterrows():
-            values = [str(index)] + [str(val) for val in row.values]
+        for x in self.x_values:
+            values = [str(x)] + [str(self.pivot_data[x][y]) for y in self.y_values]
             self.tree.insert('', tk.END, values=values)
     
     def on_filter_change(self, event=None):
-        if self.df is not None:
+        if self.raw_data:
             self.create_pivot()
     
     def draw_circle(self):
-        if self.pivot_df is None:
+        if not self.pivot_data:
             messagebox.showwarning("Cảnh báo", "Vui lòng tạo pivot table trước!")
             return
         
@@ -242,16 +262,16 @@ class PivotVisualizerApp:
             x_coords = []
             y_coords = []
             
-            for x_idx, x_val in enumerate(self.pivot_df.index):
-                for y_idx, y_val in enumerate(self.pivot_df.columns):
-                    if self.pivot_df.iloc[x_idx, y_idx] != 0:  # Chỉ lấy các điểm có giá trị
+            for x in self.x_values:
+                for y in self.y_values:
+                    if self.pivot_data[x][y] != 0:  # Chỉ lấy các điểm có giá trị
                         try:
-                            x_coords.append(float(x_val))
-                            y_coords.append(float(y_val))
+                            x_coords.append(float(x))
+                            y_coords.append(float(y))
                         except ValueError:
                             # Nếu không thể chuyển đổi thành số, sử dụng index
-                            x_coords.append(x_idx)
-                            y_coords.append(y_idx)
+                            x_coords.append(self.x_values.index(x))
+                            y_coords.append(self.y_values.index(y))
             
             if not x_coords or not y_coords:
                 messagebox.showwarning("Cảnh báo", "Không có dữ liệu để vẽ!")
@@ -262,11 +282,11 @@ class PivotVisualizerApp:
             
             # Tính toán đường tròn ngoại tiếp
             if len(x_coords) >= 3:
-                center_x = np.mean(x_coords)
-                center_y = np.mean(y_coords)
+                center_x = sum(x_coords) / len(x_coords)
+                center_y = sum(y_coords) / len(y_coords)
                 
                 # Tính bán kính (khoảng cách xa nhất từ tâm)
-                distances = [np.sqrt((x - center_x)**2 + (y - center_y)**2) 
+                distances = [math.sqrt((x - center_x)**2 + (y - center_y)**2) 
                            for x, y in zip(x_coords, y_coords)]
                 radius = max(distances)
                 
@@ -308,8 +328,8 @@ class PivotVisualizerApp:
         self.canvas.draw()
         
         # Reset variables
-        self.df = None
-        self.pivot_df = None
+        self.raw_data = {}
+        self.pivot_data = {}
         self.filter_combo['values'] = []
         self.filter_combo.set('')
         
